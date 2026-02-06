@@ -567,7 +567,7 @@ async fn test_databricks_provider() -> Result<()> {
 
 #[tokio::test]
 async fn test_ollama_provider() -> Result<()> {
-    test_provider("Ollama", OLLAMA_DEFAULT_MODEL, &["OLLAMA_HOST"], None).await
+    test_provider("Ollama", OLLAMA_DEFAULT_MODEL, &["GOOSE_OLLAMA_HOST"], None).await
 }
 
 #[tokio::test]

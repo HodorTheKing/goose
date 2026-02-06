@@ -44,7 +44,7 @@ export const configLabels: Record<string, string> = {
   DATABRICKS_HOST: 'Databricks Host',
 
   // ollama
-  OLLAMA_HOST: 'Ollama Host',
+  GOOSE_OLLAMA_HOST: 'Ollama Host',
 
   // azure openai
   AZURE_OPENAI_API_KEY: 'Azure OpenAI API Key',
@@ -68,7 +68,7 @@ export const providerPrefixes: Record<string, string[]> = {
   groq: ['GROQ_'],
   databricks: ['DATABRICKS_'],
   openrouter: ['OPENROUTER_'],
-  ollama: ['OLLAMA_'],
+  ollama: ['GOOSE_OLLAMA_'],
   azure_openai: ['AZURE_'],
   gcp_vertex_ai: ['GCP_'],
   snowflake: ['SNOWFLAKE_'],
