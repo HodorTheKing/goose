@@ -173,7 +173,7 @@ describe('OllamaSetup', () => {
       await waitFor(() => {
         expect(mockUpsert).toHaveBeenCalledWith('GOOSE_PROVIDER', 'ollama', false);
         expect(mockUpsert).toHaveBeenCalledWith('GOOSE_MODEL', 'gpt-oss:20b', false);
-        expect(mockUpsert).toHaveBeenCalledWith('OLLAMA_HOST', 'localhost', false);
+        expect(mockUpsert).toHaveBeenCalledWith('GOOSE_OLLAMA_HOST', 'localhost', false);
         expect(providerUtils.initializeSystem).toHaveBeenCalledWith(
           'ollama',
           'gpt-oss:20b',

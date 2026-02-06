@@ -109,12 +109,12 @@ else
   echo "⚠️  Skipping LiteLLM tests (LITELLM_API_KEY required)"
 fi
 
-# Ollama: requires OLLAMA_HOST (or uses default localhost:11434)
-if [ -n "$OLLAMA_HOST" ] || command -v ollama &> /dev/null; then
+# Ollama: requires GOOSE_OLLAMA_HOST (or uses default localhost:11434)
+if [ -n "$GOOSE_OLLAMA_HOST" ] || command -v ollama &> /dev/null; then
   echo "✓ Including Ollama tests"
   PROVIDERS+=("ollama -> qwen3")
 else
-  echo "⚠️  Skipping Ollama tests (OLLAMA_HOST required or ollama must be installed)"
+  echo "⚠️  Skipping Ollama tests (GOOSE_OLLAMA_HOST required or ollama must be installed)"
 fi
 
 # SageMaker TGI: requires AWS credentials and SAGEMAKER_ENDPOINT_NAME

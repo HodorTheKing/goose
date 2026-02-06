@@ -49,7 +49,7 @@ impl OllamaProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
         let host: String = config
-            .get_param("OLLAMA_HOST")
+            .get_param("GOOSE_OLLAMA_HOST")
             .unwrap_or_else(|_| OLLAMA_HOST.to_string());
 
         let timeout: Duration =
@@ -157,7 +157,7 @@ impl ProviderDef for OllamaProvider {
             OLLAMA_KNOWN_MODELS.to_vec(),
             OLLAMA_DOC_URL,
             vec![
-                ConfigKey::new("OLLAMA_HOST", true, false, Some(OLLAMA_HOST)),
+                ConfigKey::new("GOOSE_OLLAMA_HOST", true, false, Some(OLLAMA_HOST)),
                 ConfigKey::new(
                     "OLLAMA_TIMEOUT",
                     false,

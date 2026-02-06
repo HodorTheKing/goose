@@ -11,7 +11,7 @@ export function OllamaNotConfiguredTooltipMessage() {
       >
         Ollama app
       </a>{' '}
-      must be installed on your machine and open, or you must enter a value for OLLAMA_HOST.
+      must be installed on your machine and open, or you must enter a value for GOOSE_OLLAMA_HOST.
     </p>
   );
 }
