@@ -33,7 +33,7 @@
 use super::errors::ProviderError;
 use super::ollama::OLLAMA_DEFAULT_PORT;
 use super::ollama::OLLAMA_HOST;
-use crate::conversation::message::{Message, MessageContent};
+use crate::conversation::message::{Message, MessageContent, SystemNotificationType};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::formats::openai::create_request;
@@ -139,6 +139,15 @@ impl OllamaInterpreter {
         })
     }
 
+    fn truncate_text(text: &str, max_len: usize) -> String {
+        if text.chars().count() <= max_len {
+            text.to_string()
+        } else {
+            let truncated: String = text.chars().take(max_len).collect();
+            format!("{truncated}…")
+        }
+    }
+
     async fn post_structured(
         &self,
         system_prompt: &str,
@@ -183,9 +192,11 @@ impl OllamaInterpreter {
                 Err(_) => "Could not read error response".to_string(),
             };
 
+            let truncated = Self::truncate_text(&error_text, 2000);
+
             return Err(ProviderError::RequestFailed(format!(
                 "Ollama structured API returned error status {}: {}",
-                status, error_text
+                status, truncated
             )));
         }
 
@@ -211,27 +222,31 @@ impl OllamaInterpreter {
             let content = response["message"]["content"].as_str().unwrap_or_default();
 
             // Try to parse the content as JSON
-            if let Ok(content_json) = serde_json::from_str::<Value>(content) {
-                // Check for the format with tool_calls array inside an object
-                if content_json.is_object() && content_json.get("tool_calls").is_some() {
-                    // Process each tool call in the array
-                    if let Some(tool_calls_array) = content_json["tool_calls"].as_array() {
-                        for item in tool_calls_array {
-                            if item.is_object()
-                                && item.get("name").is_some()
-                                && item.get("arguments").is_some()
-                            {
-                                let name = item["name"].as_str().unwrap_or_default().to_string();
-                                let arguments = item["arguments"].clone();
+            let content_json = serde_json::from_str::<Value>(content).map_err(|e| {
+                ProviderError::RequestFailed(format!(
+                    "Failed to parse tool interpreter message content: {e}; content: {content}"
+                ))
+            })?;
 
-                                // Add the tool call to our result vector
-                                tool_calls.push(CallToolRequestParams {
-                                    meta: None,
-                                    task: None,
-                                    name: name.into(),
-                                    arguments: Some(object(arguments)),
-                                });
-                            }
+            // Check for the format with tool_calls array inside an object
+            if content_json.is_object() && content_json.get("tool_calls").is_some() {
+                // Process each tool call in the array
+                if let Some(tool_calls_array) = content_json["tool_calls"].as_array() {
+                    for item in tool_calls_array {
+                        if item.is_object()
+                            && item.get("name").is_some()
+                            && item.get("arguments").is_some()
+                        {
+                            let name = item["name"].as_str().unwrap_or_default().to_string();
+                            let arguments = item["arguments"].clone();
+
+                            // Add the tool call to our result vector
+                            tool_calls.push(CallToolRequestParams {
+                                meta: None,
+                                task: None,
+                                name: name.into(),
+                                arguments: Some(object(arguments)),
+                            });
                         }
                     }
                 }
@@ -426,7 +441,14 @@ pub async fn augment_message_with_tool_calls<T: ToolInterpreter>(
     }
 
     // Use the interpreter to convert the content to tool calls
-    let tool_calls = interpreter.interpret_to_tool_calls(content, tools).await?;
+    let tool_calls = match interpreter.interpret_to_tool_calls(content, tools).await {
+        Ok(tool_calls) => tool_calls,
+        Err(err) => {
+            let notification = format!("Toolshim failed; skipping tool calls: {err}");
+            return Ok(message
+                .with_system_notification(SystemNotificationType::InlineMessage, notification));
+        }
+    };
 
     // If no tool calls were detected, return the original message
     if tool_calls.is_empty() {
