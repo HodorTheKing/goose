@@ -258,6 +258,12 @@ fn assert_conversation_compacted(conversation: &Conversation) {
 
     let summary_msg = &messages[summary_index];
 
+    assert_eq!(
+        summary_msg.role,
+        rmcp::model::Role::Assistant,
+        "Summary message should be an assistant message"
+    );
+
     // Assert summary message visibility
     assert!(
         summary_msg.is_agent_visible(),

@@ -303,7 +303,7 @@ async fn do_compact(
             .await
         {
             Ok((mut response, mut provider_usage)) => {
-                response.role = Role::User;
+                response.role = Role::Assistant;
 
                 provider_usage
                     .ensure_tokens(&system_prompt, &summarization_request, &response, &[])
