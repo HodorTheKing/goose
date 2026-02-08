@@ -315,19 +315,6 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
                     .unwrap_or_default()
                     .to_string();
 
-                // Get the raw arguments string from the LLM.
-                let arguments_str = tool_call["function"]["arguments"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
-
-                // If arguments_str is empty, default to an empty JSON object string.
-                let arguments_str = if arguments_str.is_empty() {
-                    "{}".to_string()
-                } else {
-                    arguments_str
-                };
-
                 if !is_valid_function_name(&function_name) {
                     let error = ErrorData {
                         code: ErrorCode::INVALID_REQUEST,
@@ -339,24 +326,73 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
                     };
                     content.push(MessageContent::tool_request(id, Err(error)));
                 } else {
-                    match safely_parse_json(&arguments_str) {
-                        Ok(params) => {
+                    let arguments_value = tool_call
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .unwrap_or(&Value::Null);
+
+                    match arguments_value {
+                        Value::String(arguments_str) => {
+                            let arguments_str = if arguments_str.is_empty() {
+                                "{}"
+                            } else {
+                                arguments_str
+                            };
+
+                            match safely_parse_json(arguments_str) {
+                                Ok(params) => {
+                                    content.push(MessageContent::tool_request(
+                                        id,
+                                        Ok(CallToolRequestParams {
+                                            meta: None,
+                                            task: None,
+                                            name: function_name.into(),
+                                            arguments: Some(object(params)),
+                                        }),
+                                    ));
+                                }
+                                Err(e) => {
+                                    let error = ErrorData {
+                                        code: ErrorCode::INVALID_PARAMS,
+                                        message: Cow::from(format!(
+                                            "Could not interpret tool use parameters for id {}: {}. Raw arguments: '{}'",
+                                            id, e, arguments_str
+                                        )),
+                                        data: None,
+                                    };
+                                    content.push(MessageContent::tool_request(id, Err(error)));
+                                }
+                            }
+                        }
+                        Value::Object(arguments_obj) => {
                             content.push(MessageContent::tool_request(
                                 id,
                                 Ok(CallToolRequestParams {
                                     meta: None,
                                     task: None,
                                     name: function_name.into(),
-                                    arguments: Some(object(params)),
+                                    arguments: Some(object(Value::Object(arguments_obj.clone()))),
                                 }),
                             ));
                         }
-                        Err(e) => {
+                        Value::Null => {
+                            content.push(MessageContent::tool_request(
+                                id,
+                                Ok(CallToolRequestParams {
+                                    meta: None,
+                                    task: None,
+                                    name: function_name.into(),
+                                    arguments: Some(object(Value::Object(serde_json::Map::new()))),
+                                }),
+                            ));
+                        }
+                        _ => {
                             let error = ErrorData {
                                 code: ErrorCode::INVALID_PARAMS,
                                 message: Cow::from(format!(
-                                    "Could not interpret tool use parameters for id {}: {}. Raw arguments: '{}'",
-                                    id, e, arguments_str
+                                    "Tool use parameters for id {} must be a JSON object or string, got {}",
+                                    id,
+                                    arguments_value
                                 )),
                                 data: None,
                             };
@@ -1113,6 +1149,29 @@ mod tests {
     }
 
     #[test]
+    fn test_response_to_message_object_arguments() -> anyhow::Result<()> {
+        let mut response: Value = serde_json::from_str(OPENAI_TOOL_USE_RESPONSE)?;
+        response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] =
+            json!({"param": "value", "count": 2});
+
+        let message = response_to_message(&response)?;
+
+        assert_eq!(message.content.len(), 1);
+        if let MessageContent::ToolRequest(request) = &message.content[0] {
+            let tool_call = request.tool_call.as_ref().unwrap();
+            assert_eq!(tool_call.name, "example_fn");
+            assert_eq!(
+                tool_call.arguments,
+                Some(object!({"param": "value", "count": 2}))
+            );
+        } else {
+            panic!("Expected ToolRequest content");
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn test_response_to_message_invalid_func_name() -> anyhow::Result<()> {
         let mut response: Value = serde_json::from_str(OPENAI_TOOL_USE_RESPONSE)?;
         response["choices"][0]["message"]["tool_calls"][0]["function"]["name"] =
@@ -1130,6 +1189,31 @@ mod tests {
                     assert!(msg.starts_with("The provided function name"));
                 }
                 _ => panic!("Expected ToolNotFound error"),
+            }
+        } else {
+            panic!("Expected ToolRequest content");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_response_to_message_invalid_argument_type() -> anyhow::Result<()> {
+        let mut response: Value = serde_json::from_str(OPENAI_TOOL_USE_RESPONSE)?;
+        response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = json!(42);
+
+        let message = response_to_message(&response)?;
+
+        if let MessageContent::ToolRequest(request) = &message.content[0] {
+            match &request.tool_call {
+                Err(ErrorData {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: msg,
+                    data: None,
+                }) => {
+                    assert!(msg.starts_with("Tool use parameters for id"));
+                }
+                _ => panic!("Expected InvalidParameters error"),
             }
         } else {
             panic!("Expected ToolRequest content");
