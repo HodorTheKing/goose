@@ -1268,6 +1268,25 @@ mod tests {
     }
 
     #[test]
+    fn test_response_to_message_null_argument() -> anyhow::Result<()> {
+        let mut response: Value = serde_json::from_str(OPENAI_TOOL_USE_RESPONSE)?;
+        response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] =
+            serde_json::Value::Null;
+
+        let message = response_to_message(&response)?;
+
+        if let MessageContent::ToolRequest(request) = &message.content[0] {
+            let tool_call = request.tool_call.as_ref().unwrap();
+            assert_eq!(tool_call.name, "example_fn");
+            assert_eq!(tool_call.arguments, Some(object!({})));
+        } else {
+            panic!("Expected ToolRequest content");
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn test_response_to_message_api_error() -> anyhow::Result<()> {
         // Test that API responses with an "error" field return the error message
         let response = json!({
