@@ -51,6 +51,7 @@ pub const DEFAULT_INTERPRETER_MODEL_OLLAMA: &str = "mistral-nemo";
 /// Environment variables that affect behavior:
 /// - GOOSE_TOOLSHIM: When set to "true" or "1", enables using the tool shim in the standard OllamaProvider (default: false)
 /// - GOOSE_TOOLSHIM_OLLAMA_MODEL: Ollama model to use as the tool interpreter (default: DEFAULT_INTERPRETER_MODEL)
+/// - GOOSE_TOOLSHIM_OLLAMA_FALLBACK_MODEL: Ollama model to use as a fallback interpreter (default: none)
 /// A trait for models that can interpret text into structured tool call JSON format
 #[async_trait::async_trait]
 pub trait ToolInterpreter {
@@ -210,28 +211,30 @@ impl OllamaInterpreter {
         if response.get("message").is_some() && response["message"].get("content").is_some() {
             let content = response["message"]["content"].as_str().unwrap_or_default();
 
-            // Try to parse the content as JSON
-            if let Ok(content_json) = serde_json::from_str::<Value>(content) {
-                // Check for the format with tool_calls array inside an object
-                if content_json.is_object() && content_json.get("tool_calls").is_some() {
-                    // Process each tool call in the array
-                    if let Some(tool_calls_array) = content_json["tool_calls"].as_array() {
-                        for item in tool_calls_array {
-                            if item.is_object()
-                                && item.get("name").is_some()
-                                && item.get("arguments").is_some()
-                            {
-                                let name = item["name"].as_str().unwrap_or_default().to_string();
-                                let arguments = item["arguments"].clone();
+            let content_json = serde_json::from_str::<Value>(content).map_err(|e| {
+                ProviderError::RequestFailed(format!(
+                    "Failed to parse tool interpreter JSON content: {e}"
+                ))
+            })?;
+            // Check for the format with tool_calls array inside an object
+            if content_json.is_object() && content_json.get("tool_calls").is_some() {
+                // Process each tool call in the array
+                if let Some(tool_calls_array) = content_json["tool_calls"].as_array() {
+                    for item in tool_calls_array {
+                        if item.is_object()
+                            && item.get("name").is_some()
+                            && item.get("arguments").is_some()
+                        {
+                            let name = item["name"].as_str().unwrap_or_default().to_string();
+                            let arguments = item["arguments"].clone();
 
-                                // Add the tool call to our result vector
-                                tool_calls.push(CallToolRequestParams {
-                                    meta: None,
-                                    task: None,
-                                    name: name.into(),
-                                    arguments: Some(object(arguments)),
-                                });
-                            }
+                            // Add the tool call to our result vector
+                            tool_calls.push(CallToolRequestParams {
+                                meta: None,
+                                task: None,
+                                name: name.into(),
+                                arguments: Some(object(arguments)),
+                            });
                         }
                     }
                 }
@@ -287,16 +290,35 @@ Otherwise, if no JSON tool requests are provided, use the no-op tool:
         // Determine which model to use for interpretation (from env var or default)
         let interpreter_model = std::env::var("GOOSE_TOOLSHIM_OLLAMA_MODEL")
             .unwrap_or_else(|_| DEFAULT_INTERPRETER_MODEL_OLLAMA.to_string());
+        let fallback_model = std::env::var("GOOSE_TOOLSHIM_OLLAMA_FALLBACK_MODEL").ok();
 
-        // Make a call to ollama with structured output
-        let interpreter_response = self
-            .post_structured("", &format_instruction, format_schema, &interpreter_model)
-            .await?;
+        let mut last_error: Option<ProviderError> = None;
+        let mut models = vec![interpreter_model.as_str()];
+        if let Some(model) = fallback_model.as_deref() {
+            models.push(model);
+        }
 
-        // Process the interpreter response to get tool calls directly
-        let tool_calls = OllamaInterpreter::process_interpreter_response(&interpreter_response)?;
+        for model in models.into_iter().take(2) {
+            match self
+                .post_structured("", &format_instruction, format_schema.clone(), model)
+                .await
+                .and_then(|response| OllamaInterpreter::process_interpreter_response(&response))
+            {
+                Ok(tool_calls) => return Ok(tool_calls),
+                Err(err) => {
+                    last_error = Some(err);
+                }
+            }
+        }
 
-        Ok(tool_calls)
+        if let Some(err) = last_error {
+            tracing::warn!(
+                "Tool interpreter failed, returning empty tool calls: {}",
+                err
+            );
+        }
+
+        Ok(vec![])
     }
 }
 
