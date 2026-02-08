@@ -143,7 +143,7 @@ impl OllamaInterpreter {
         &self,
         system_prompt: &str,
         format_instruction: &str,
-        format_schema: Value,
+        format_schema: &Value,
         model: &str,
     ) -> Result<Value, ProviderError> {
         let base_url = self.base_url.trim_end_matches('/');
@@ -166,7 +166,7 @@ impl OllamaInterpreter {
         )?;
 
         payload["stream"] = json!(false); // needed for the /api/chat endpoint to work
-        payload["format"] = format_schema;
+        payload["format"] = format_schema.clone();
 
         tracing::info!(
             "Tool interpreter payload: {}",
@@ -359,7 +359,7 @@ Otherwise, if no JSON tool requests are provided, use the no-op tool:
 
         // Make a call to ollama with structured output
         let interpreter_response = self
-            .post_structured("", &format_instruction, format_schema, &interpreter_model)
+            .post_structured("", &format_instruction, &format_schema, &interpreter_model)
             .await?;
 
         // Process the interpreter response to get tool calls directly
@@ -369,7 +369,7 @@ Otherwise, if no JSON tool requests are provided, use the no-op tool:
         if dropped_any {
             let strict_instruction = build_format_instruction(true);
             let retry_response = self
-                .post_structured("", &strict_instruction, format_schema, &interpreter_model)
+                .post_structured("", &strict_instruction, &format_schema, &interpreter_model)
                 .await?;
             let retry_calls = OllamaInterpreter::process_interpreter_response(&retry_response)?;
             let (validated_retry_calls, _) = validate_tool_calls(retry_calls, tools);
