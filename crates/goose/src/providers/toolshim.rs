@@ -41,6 +41,7 @@ use anyhow::Result;
 use reqwest::Client;
 use rmcp::model::{object, CallToolRequestParams, RawContent, Tool};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::time::Duration;
 use uuid::Uuid;
@@ -427,21 +428,55 @@ pub async fn augment_message_with_tool_calls<T: ToolInterpreter>(
 
     // Use the interpreter to convert the content to tool calls
     let tool_calls = interpreter.interpret_to_tool_calls(content, tools).await?;
+    let (mut validated_calls, dropped_any, dropped_only_noop) =
+        validate_tool_calls(tool_calls, tools);
 
-    // If no tool calls were detected, return the original message
-    if tool_calls.is_empty() {
+    if validated_calls.is_empty() && dropped_any && !dropped_only_noop {
+        let retry_calls = interpreter.interpret_to_tool_calls(content, tools).await?;
+        let (retry_validated, _, _) = validate_tool_calls(retry_calls, tools);
+        validated_calls = retry_validated;
+    }
+
+    if validated_calls.is_empty() {
         return Ok(message);
     }
 
-    // Add each tool call to the message
     let mut final_message = message;
-    for tool_call in tool_calls {
-        if tool_call.name != "noop" {
-            // do not actually execute noop tool
-            let id = Uuid::new_v4().to_string();
-            final_message = final_message.with_tool_request(id, Ok(tool_call));
-        }
+    for tool_call in validated_calls {
+        let id = Uuid::new_v4().to_string();
+        final_message = final_message.with_tool_request(id, Ok(tool_call));
     }
 
     Ok(final_message)
+}
+
+fn validate_tool_calls(
+    tool_calls: Vec<CallToolRequestParams>,
+    tools: &[Tool],
+) -> (Vec<CallToolRequestParams>, bool, bool) {
+    let valid_tool_names: HashSet<String> =
+        tools.iter().map(|tool| tool.name.to_string()).collect();
+    let mut validated = Vec::new();
+    let mut dropped_any = false;
+    let mut dropped_noop = false;
+    let mut dropped_unknown = false;
+
+    for tool_call in tool_calls {
+        if tool_call.name == "noop" {
+            dropped_any = true;
+            dropped_noop = true;
+            continue;
+        }
+
+        let tool_name = tool_call.name.clone().into_owned();
+        if valid_tool_names.contains(&tool_name) {
+            validated.push(tool_call);
+        } else {
+            dropped_any = true;
+            dropped_unknown = true;
+        }
+    }
+
+    let dropped_only_noop = dropped_any && dropped_noop && !dropped_unknown && validated.is_empty();
+    (validated, dropped_any, dropped_only_noop)
 }
