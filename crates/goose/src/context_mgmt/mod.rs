@@ -303,7 +303,7 @@ async fn do_compact(
             .await
         {
             Ok((mut response, mut provider_usage)) => {
-                response.role = Role::User;
+                response.role = Role::Assistant;
 
                 provider_usage
                     .ensure_tokens(&system_prompt, &summarization_request, &response, &[])
@@ -525,6 +525,7 @@ pub fn maybe_summarize_tool_pair(
 mod tests {
     use super::*;
     use crate::{
+        conversation::fix_conversation,
         model::ModelConfig,
         providers::{base::Usage, errors::ProviderError},
     };
@@ -639,7 +640,10 @@ mod tests {
 
         let agent_conversation = compacted_conversation.agent_visible_messages();
 
-        let _ = Conversation::new(agent_conversation)
+        let (fixed_conversation, _issues) =
+            fix_conversation(Conversation::new_unvalidated(agent_conversation));
+
+        let _ = Conversation::new(fixed_conversation.messages().clone())
             .expect("compaction should produce a valid conversation");
     }
 
