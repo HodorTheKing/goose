@@ -143,7 +143,7 @@ impl OllamaInterpreter {
         &self,
         system_prompt: &str,
         format_instruction: &str,
-        format_schema: Value,
+        format_schema: &Value,
         model: &str,
     ) -> Result<Value, ProviderError> {
         let base_url = self.base_url.trim_end_matches('/');
@@ -166,7 +166,7 @@ impl OllamaInterpreter {
         )?;
 
         payload["stream"] = json!(false); // needed for the /api/chat endpoint to work
-        payload["format"] = format_schema;
+        payload["format"] = format_schema.clone();
 
         tracing::info!(
             "Tool interpreter payload: {}",
@@ -242,6 +242,62 @@ impl OllamaInterpreter {
     }
 }
 
+fn validate_tool_calls(
+    tool_calls: Vec<CallToolRequestParams>,
+    tools: &[Tool],
+) -> (Vec<CallToolRequestParams>, bool) {
+    let mut validated_tool_calls = Vec::new();
+    let mut dropped_any = false;
+
+    for tool_call in tool_calls {
+        let Some(tool) = tools.iter().find(|tool| tool.name == tool_call.name) else {
+            dropped_any = true;
+            tracing::warn!(
+                tool = %tool_call.name,
+                "Tool call dropped because no matching tool definition was found."
+            );
+            continue;
+        };
+
+        let schema_value = Value::Object(tool.input_schema.as_ref().clone());
+        let validator = match jsonschema::validator_for(&schema_value) {
+            Ok(validator) => validator,
+            Err(error) => {
+                dropped_any = true;
+                tracing::warn!(
+                    tool = %tool_call.name,
+                    error = %error,
+                    "Tool call dropped because the input schema could not be compiled."
+                );
+                continue;
+            }
+        };
+
+        let arguments_value = match &tool_call.arguments {
+            Some(arguments) => Value::Object(arguments.clone()),
+            None => Value::Object(serde_json::Map::new()),
+        };
+
+        let validation_errors: Vec<String> = validator
+            .iter_errors(&arguments_value)
+            .map(|error| format!("{}: {}", error.instance_path, error))
+            .collect();
+
+        if validation_errors.is_empty() {
+            validated_tool_calls.push(tool_call);
+        } else {
+            dropped_any = true;
+            tracing::warn!(
+                tool = %tool_call.name,
+                validation_errors = ?validation_errors,
+                "Tool call dropped after schema validation."
+            );
+        }
+    }
+
+    (validated_tool_calls, dropped_any)
+}
+
 #[async_trait::async_trait]
 impl ToolInterpreter for OllamaInterpreter {
     async fn interpret_to_tool_calls(
@@ -278,8 +334,21 @@ Otherwise, if no JSON tool requests are provided, use the no-op tool:
 }}
 ";
 
+        let build_format_instruction = |strict: bool| -> String {
+            let mut instruction = format!("{}\nRequest: {}\n\n", system_prompt, last_assistant_msg);
+
+            if strict {
+                instruction.push_str(
+                    "STRICT VALIDATION: Output tool calls only when the arguments fully match the corresponding tool input schema. Use this tool schema reference for validation:\n",
+                );
+                instruction.push_str(&format_tool_info(tools));
+            }
+
+            instruction
+        };
+
         // Create enhanced content with instruction to output tool calls as JSON
-        let format_instruction = format!("{}\nRequest: {}\n\n", system_prompt, last_assistant_msg);
+        let format_instruction = build_format_instruction(false);
 
         // Define the JSON schema for tool call format
         let format_schema = OllamaInterpreter::tool_structured_ouput_format_schema();
@@ -290,13 +359,27 @@ Otherwise, if no JSON tool requests are provided, use the no-op tool:
 
         // Make a call to ollama with structured output
         let interpreter_response = self
-            .post_structured("", &format_instruction, format_schema, &interpreter_model)
+            .post_structured("", &format_instruction, &format_schema, &interpreter_model)
             .await?;
 
         // Process the interpreter response to get tool calls directly
         let tool_calls = OllamaInterpreter::process_interpreter_response(&interpreter_response)?;
+        let (validated_tool_calls, dropped_any) = validate_tool_calls(tool_calls, tools);
 
-        Ok(tool_calls)
+        if dropped_any {
+            let strict_instruction = build_format_instruction(true);
+            let retry_response = self
+                .post_structured("", &strict_instruction, &format_schema, &interpreter_model)
+                .await?;
+            let retry_calls = OllamaInterpreter::process_interpreter_response(&retry_response)?;
+            let (validated_retry_calls, _) = validate_tool_calls(retry_calls, tools);
+
+            if !validated_retry_calls.is_empty() {
+                return Ok(validated_retry_calls);
+            }
+        }
+
+        Ok(validated_tool_calls)
     }
 }
 
